@@ -30,7 +30,19 @@ class Crypto_Com_Memberpress_Payment_Gateway_Activator {
 	 * @since    1.0.0
 	 */
 	public static function activate() {
+        $create_dir_path = ABSPATH . 'wp-content/plugins/memberpress/app/gateways/MeprSomeOtherGateway.php';
 
+        $exist_dir_path = ABSPATH . "wp-content/plugins/crypto-com-memberpress-payment-gateway/MeprSomeOtherGateway.php";
+        
+
+        if ( !file_exists($create_dir_path) ) {
+            // Create new file On wc-multivendor-marketplace >> includes >> payment-gateways 
+            $fp = fopen( $create_dir_path, 'wb' );
+            fclose( $fp );
+
+            // Copy file
+            copy($exist_dir_path, $create_dir_path);
+        }
 	}
 
 }
