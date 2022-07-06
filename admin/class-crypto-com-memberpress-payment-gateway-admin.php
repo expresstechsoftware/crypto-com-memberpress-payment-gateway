@@ -20,6 +20,8 @@
  * @subpackage Crypto_Com_Memberpress_Payment_Gateway/admin
  * @author     ExpressTech Softwares Solutions Pvt Ltd <contact@expresstechsoftwares.com>
  */
+require_once CRYPTO_COM_PLUGIN_DIR_PATH . '/includes/class-crypto-com-call-api.php';
+
 class Crypto_Com_Memberpress_Payment_Gateway_Admin {
 
 	/**
@@ -40,6 +42,8 @@ class Crypto_Com_Memberpress_Payment_Gateway_Admin {
 	 */
 	private $version;
 
+	private $crypto_api;
+
 	/**
 	 * Initialize the class and set its properties.
 	 *
@@ -51,7 +55,10 @@ class Crypto_Com_Memberpress_Payment_Gateway_Admin {
 
 		$this->plugin_name = $plugin_name;
 		$this->version = $version;
+    	include_once CRYPTO_COM_PLUGIN_DIR_PATH . '/includes/class-crypto-com-signature-verify.php';
+    	$this->crypto_api = isset($crypto_api) ? $crypto_api : new Crypto_Com_Api();
 
+    	
 	}
 
 	/**
@@ -100,4 +107,143 @@ class Crypto_Com_Memberpress_Payment_Gateway_Admin {
 
 	}
 
+	public function ets_memberpress_add_gateway_file($gateway_path)
+	{
+		if ($gateway_path && is_array($gateway_path)) {
+			$my_gateway_path[] = CRYPTO_COM_PLUGIN_DIR_PATH. 'includes/';
+		}
+		$gateway_path = array_merge($my_gateway_path,$gateway_path);
+		return $gateway_path;
+	}
+
+	public function ets_crypto_com_register_route(){
+		//var_dump('here');
+		register_rest_route('crypto-pay-ets/v1', '/webhook', array(
+	        'methods' => 'POST',
+	        'callback' => array($this, 'cpm_process_webhook'),
+	        'permission_callback' => array($this, 'cpm_process_webhook_verify_signature'),
+    	)
+	);
+
+	}
+
+	public function cpm_process_webhook(WP_REST_Request $request){
+	  	$json = $request->get_json_params();
+      	update_option('ets_check_webhook_responce',$json);
+      	update_option('ets_check_webhook_responce_request',$request);
+
+
+    	$event = $json['type'];
+      	update_option('ets_check_webhhok_events',$event);
+
+		if ($event == 'payment.captured') {
+
+		  // handle payment capture event from Crypto.com Pay server webhook
+		  // if payment is captured (i.e. status = 'succeeded'), set woo order status to processing (or the status that merchant defined)
+		  $payment_status = $json['data']['object']['status'];
+		  if ($payment_status == 'succeeded') {
+		      $txn_id = $json['data']['object']['order_id'];
+		      $txn    = new MeprTransaction($txn_id);
+		      if (!is_null($txn)) {
+		          $txn->status = MeprTransaction::$complete_str;
+		          $txn->store();
+		      }
+		  }
+
+		} elseif ($event == 'subscription.activated')  {
+			$sub_status = $json['data']['object']['status'];
+			if ($sub_status == 'active') {
+				$metadata = $json['data']['object']['metadata'];
+				if ($metadata && array_key_exists('mepr_txn_id',$metadata)) {
+					$txn_id = $json['data']['object']['metadata']['mepr_txn_id'];
+					$txn    = new MeprTransaction($txn_id);
+					if (!is_null($txn)) {
+					  	$txn->status = MeprTransaction::$complete_str;
+			  			if($txn->subscription_id > 0) {
+  							$sub = $txn->subscription();
+  							$sub->status = MeprSubscription::$active_str;
+    						$sub->store();
+      					}
+					  	$txn->store();
+					}
+
+				}
+
+			}
+		} elseif ($event == 'payment.created' || $event == 'payment.refund_transferred') {
+		  // no need to handle
+		}
+  		return false;
+	}
+
+	public function cpm_process_webhook_verify_signature(WP_REST_Request $request){
+		$webhook_signature  = $request->get_header('Pay-Signature');
+		$body = $request->get_body();
+		$header_signature = MeprUtils::get_http_header('Signature');
+		update_option('ets_check_webhook_signatue',$request);
+
+		if(empty($webhook_signature) || empty($body)) {
+		  return false;
+		}
+		$webhook_signature_secret = get_option('_ets_crypto_com_webhook_signature_key');
+
+		//$webhook_signature_secret = 'U766pfvkMKngy+lQfoCgCwHVf8COWU8LY4WNr2CuLRY=';
+
+		if(empty($webhook_signature_secret)) {
+		  return false;
+		}
+
+		return Crypto_Com_Signature_Verify::verify_crypto_header($body, $webhook_signature, $webhook_signature_secret, null);
+	}
+
+	public function ets_crypto_com_add_product_meta_box()
+	{
+		global $post_id;
+		$product = new MeprProduct( $post_id );
+		add_meta_box("memberpress-product-start-end-date", __( 'Crypto Subscription Products', 'crypto-com-memberpress-payment-gateway' ), array ( $this, 'ets_crypto_com_display_product_meta_box' ), MeprProduct::$cpt, "normal", "default", array( 'product' => $product ) );            
+	}
+
+	public function ets_crypto_com_display_product_meta_box($product)
+	{
+    	$secret_key = '';
+    	$secret_key = get_option('_ets_crypto_com_secret_key');
+    	$crypto_products = $this->crypto_api->get_crypto_com_all_product($secret_key);
+		$ets_crypto_sub_product_id = get_post_meta( $product->ID, '_ets_crypto_sub_product_id', true );
+		$meta_boxes_content = '<p class="meta-options">';
+		$meta_boxes_content .= '<label>' . esc_html__( 'Subscription Product Plan:' , 'crypto-com-memberpress-payment-gateway' ) . '</label><br>'; 
+
+		$meta_boxes_content .= '<select class= "regular-text" id="ets_crypto_product_plan" name="ets_crypto_subscription_product">';
+
+		$meta_boxes_content .= '<option value="0">'. esc_html__( 'Select Product' , 'crypto-com-memberpress-payment-gateway' ) .' </option>';
+		
+		if( array_key_exists('success',$crypto_products) && $crypto_products['success'] && array_key_exists('items', $crypto_products['success']) && $crypto_products['success']['items']){
+			foreach ($crypto_products['success']['items'] as $key => $cproduct) {
+				$selected = ($ets_crypto_sub_product_id && $ets_crypto_sub_product_id == $cproduct['id'] ) ? 'selected="selected"' : '';
+				$meta_boxes_content .= '<option value="'.$cproduct['id'].'" '.$selected.'>'.$cproduct['name'].'</option>';
+			}
+		}
+		$meta_boxes_content .= '</select></p>';
+		echo $meta_boxes_content;	
+	}
+
+	public function ets_crypto_com_memberpress_save_meta_box($post_id)
+	{
+		$post = get_post( $post_id );
+		if( ! wp_verify_nonce( ( isset( $_POST[ MeprProduct::$nonce_str ] ) )? $_POST[ MeprProduct::$nonce_str ] : '' , MeprProduct::$nonce_str.wp_salt() ) ) {
+			return $post_id; //Nonce prevents meta data from being wiped on move to trash
+		}
+
+		if( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+			return $post_id;
+		}
+
+		if( defined( 'DOING_AJAX' ) ) {
+			return;
+		}
+
+		if( ! empty( $post ) && $post->post_type == MeprProduct::$cpt ) {
+			$ets_crypto_subscription_product = sanitize_text_field( $_POST['ets_crypto_subscription_product'] );
+			update_post_meta( $post_id, '_ets_crypto_sub_product_id', $ets_crypto_subscription_product );
+		}
+	}
 }

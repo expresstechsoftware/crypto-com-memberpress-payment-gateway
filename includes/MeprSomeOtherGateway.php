@@ -3,21 +3,43 @@ if(!defined('ABSPATH')) {die('You are not allowed to call this page directly.');
 /**
  * 
  */
+
+include_once CRYPTO_COM_PLUGIN_DIR_PATH . '/includes/class-crypto-com-helper.php';
+include_once CRYPTO_COM_PLUGIN_DIR_PATH . '/includes/class-crypto-com-call-api.php';
+
 class MeprSomeOtherGateway extends MeprBaseRealGateway
 {
-  
+  private $crypto_api;
+
   function __construct()
   {
     $this->name = __('Crypto.com', 'memberpress');
     $this->key = __('crypto', 'memberpress');
     $this->has_spc_form = true;
     $this->set_defaults();
+    $this->capabilities = array(
+      'process-credit-cards',
+      'process-payments',
+      'create-subscriptions',
+      'cancel-subscriptions',
+      'update-subscriptions',
+      'create-customer',
+      //'send-cc-expirations'
+    );
 
+    $this->notifiers = array(
+      //'whk' => 'listener',
+      //'crypto-service-whk' => 'service_listener',
+    );
+    $this->message_pages = array();
   }
 
   public function load($settings) {
     $this->settings = (object)$settings;
     $this->set_defaults();
+    $this->crypto_api = isset($crypto_api) ? $crypto_api : new Crypto_Com_Api($this->settings);
+
+
   }
 
   protected function set_defaults() {
@@ -33,7 +55,7 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
         'use_label' => true,
         'icon' => MEPR_IMAGES_URL . '/checkout/cards.png',
         'use_icon' => true,
-        'desc' => __('Checkout with Crypto.com Coin (CRO).', 'memberpress'),
+        'desc' => __('Checkout with Crypto.com App.', 'memberpress'),
         'use_desc' => true,
         'manually_complete' => false,
         'always_send_welcome' => false,
@@ -41,7 +63,9 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
         'sandbox' => false,
         'login_name' => '',
         'transaction_key' => '',
+        'webhook_signature_key' => '',
         'signature_key' => '',
+        'subscription_id' => '',
         'force_ssl' => false,
         'debug' => false,
         'test_mode' => false,
@@ -57,6 +81,10 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     $this->desc = $this->settings->desc;
     $this->use_desc = $this->settings->use_desc;
     //$this->recurrence_type = $this->settings->recurrence_type;
+    $this->settings->transaction_key = trim($this->settings->transaction_key);
+    $this->settings->signature_key   = trim($this->settings->signature_key);
+    $this->settings->webhook_signature_key = trim($this->settings->webhook_signature_key);
+    $this->settings->subscription_id = $this->settings->subscription_id;
   }
 
   public function spc_payment_fields() {
@@ -67,13 +95,11 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     * before this step is necessary this method should just be left blank.
     */
   public function process_payment($txn) {
-    var_dump($txn,'here');
-    die();
     if(isset($txn) && $txn instanceof MeprTransaction) {
       $usr = new MeprUser($txn->user_id);
       $prd = new MeprProduct($txn->product_id);
     }
-   else
+    else
       throw new MeprGatewayException( __('Payment was unsuccessful, please check your payment details and try again.', 'memberpress') );
 
     //$invoice = $txn->id.'-'.time();
@@ -91,7 +117,6 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     $return_url = '';
     $return_url = $mepr_options->thankyou_page_url(build_query($query_params));
     $amount = MeprUtils::format_float($txn->total); //Use $sub->total here because $txn->amount may be a trial price
-    //$currency = $order->get_currency();
     $customer_name = $usr->first_name . " " . $usr->last_name;
     $cancel_url = esc_url_raw(strtok($_POST['mepr_current_url'], "#"));
     if (empty($cancel_url)) {
@@ -99,10 +124,6 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     }
     
     $secret_key = trim($this->settings->signature_key);
-
-    $result = self::create_crypto_payment($txn->id, $amount, $customer_name, $return_url, $cancel_url, $secret_key);
-    var_dump($result);
-    die();
 
     $upgrade = $txn->is_upgrade();
     $downgrade = $txn->is_downgrade();
@@ -130,18 +151,6 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
       //MeprUtils::send_transaction_receipt_notices($txn);
       MeprUtils::send_signup_notices($txn);
     }
-    else {
-      if($this->settings->always_send_welcome) {
-        MeprUtils::send_signup_notices($txn, false, true);
-      }
-      else if (!$usr->signup_notice_sent) {
-        MeprUtils::send_notices($txn, null, 'MeprAdminSignupEmail');
-        MeprUtils::send_notices($txn, null, 'MeprAdminNewOneOffEmail');
-        $usr->signup_notice_sent = true;
-        $usr->store();
-      }
-    }
-
     return $txn;
   }
 
@@ -337,6 +346,7 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     * before any content is rendered.
   */
   public function process_signup_form($txn) {
+
     //if($txn->amount <= 0.00) {
     //  MeprTransaction::create_free_transaction($txn);
     //  return;
@@ -347,10 +357,45 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     // $product = new MeprProduct($txn->product_id);
     // $sanitized_title = sanitize_title($product->post_title);
     //MeprUtils::wp_redirect($mepr_options->thankyou_page_url("membership={$sanitized_title}&trans_num={$txn->trans_num}"));
+    if(isset($txn) && $txn instanceof MeprTransaction) {
+      $usr = new MeprUser($txn->user_id);
+      $prd = new MeprProduct($txn->product_id);
+      $txn_id = $txn->id;
+
+    } else
+      throw new MeprGatewayException( __('Payment was unsuccessful, please check your payment details and try again.', 'memberpress') );
+
+    $mepr_options = MeprOptions::fetch();
+    $membership_id = $prd->ID ;
+    $first_name = $usr->first_name;
+    $last_name = $usr->last_name;
+    $user_email = $usr->user_email;
+    $customer_name = $first_name . ' '. $last_name;
+    $currency = $mepr_options->currency_code;
+    $signature_key = trim($this->settings->signature_key);
+    $product_result = $this->crypto_api->get_crypto_product($membership_id, $signature_key);
+
+    if ($product_result && array_key_exists('success', $product_result ) && $product_result['success']) {
+      $pricing_plan_id = $product_result['success']['pricing_plans'][0]['id'];
+      $plan_amount = $product_result['success']['pricing_plans'][0]['amount'];
+    }
+    $customer_result = $this->crypto_api->create_crypto_customer($user_email, $customer_name, $signature_key);
+    if ($customer_result && array_key_exists('success',$customer_result)) {
+      $customer_id = $customer_result['success']['id'];
+    }
+    if ($customer_id && $pricing_plan_id ) {
+      $subs_result = $this->crypto_api->create_crypto_subscription($txn_id, $customer_id, $pricing_plan_id, $signature_key);
+      if($subs_result && $subs_result['success']){
+        $subscription_id = $subs_result['success']['id'];
+        $this->settings->subscription_id = $subscription_id;
+        update_post_meta($txn_id,'_ets_crypto_subscription_id', $subscription_id);
+      }
+    }
   }
 
   public function display_payment_page($txn) {
     // Nothing here yet
+
   }
 
   /** This gets called on wp_enqueue_script and enqueues a set of
@@ -377,19 +422,19 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     }
     $sanitized_title = sanitize_title($prd->post_title);
     $query_params = array('membership' => $sanitized_title, 'trans_num' => $txn->trans_num, 'membership_id' => $prd->ID);
-    /*if($txn->subscription_id > 0) {
+    if($txn->subscription_id > 0) {
       $sub = $txn->subscription();
       $query_params = array_merge($query_params, array('subscr_id' => $sub->subscr_id));
-    }*/
+    }
     $result_url = '';
     $result_url = $mepr_options->thankyou_page_url(build_query($query_params));
     $first_name = $usr->first_name;
     $last_name = $usr->last_name;
-    $currency = strtolower($mepr_option->currency_code);
-
+    $currency = $mepr_options->currency_code;
     ob_start();
     $invoice = MeprTransactionsHelper::get_invoice($txn);
     echo $invoice;
+    $amount =  Crypto_Currency_Helper::get_crypto_currency_in_subunit($currency, $amount);
     $payment_parameters = array(
       'publishable_key'=> trim($this->settings->transaction_key),
      // 'publishable_key' => 'pk_live_pinyHt65woVHZqXAK6FMWXBk',
@@ -400,7 +445,7 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
       'first_name'     => $first_name,
       'last_name'      => $last_name
     );
-
+    $subscription_id = get_post_meta($txn_id,'_ets_crypto_subscription_id',true);
     ?>
       <div class="mp_wrapper mp_payment_form_wrapper">
         <form action="" method="post" id="payment-form" class="mepr-form" novalidate>
@@ -413,7 +458,7 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
           </script>
           <script>
             cryptopay.Button({
-            createPayment: function(actions) {
+            /*createPayment: function(actions) {
                 return actions.payment.create({
                   currency: '<?php echo esc_attr($payment_parameters['currency']) ?>',
                   amount: '<?php echo esc_attr($payment_parameters['amount']) ?>',
@@ -425,10 +470,21 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
                     plugin_flow: 'popup'
                   }
                 });
+            },*/
+            createSubscription: function(actions) {
+              return actions.subscription.fetch(<?php echo "'".$subscription_id."'";?>);
             },
-            onApprove: function (d, actions) {
+            onApprove: function(data, actions) {
+              console.log(data,'==',actions);
+              if(data && data.id) {
+                  console.log('here',data);
+                  window.open('<?php echo esc_attr($result_url) ?>'+'&id='+data.id, '_self');
+              }
+            }
+            /*onApprove: function (d, actions) {
               if(actions && actions.payment) {
                 actions.payment.fetch().then(function (data) {
+                  console.log(data);
                   window.open('<?php echo esc_attr($result_url) ?>'+'&id='+data.id, '_self');
                 })
                 .catch(function (err) {
@@ -437,10 +493,10 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
               } else if (d && d.id) {
                 window.open('<?php echo esc_attr($result_url) ?>'+'&id='+d.id, '_self');
               }
-            }
+            }*/
             }).render("#pay-crypto-button")
           </script>
-          <div id="pay-crypto-button" type='button'></div>
+          <div id="pay-crypto-button" type='button' data-subscription-id="<?php echo esc_attr($subscription_id);?>"></div>
 
           <img src="<?php echo admin_url('images/loading.gif'); ?>" alt="<?php _e('Loading...', 'memberpress'); ?>" style="display: none;" class="mepr-loading-gif" />
           <?php MeprView::render('/shared/has_errors', get_defined_vars()); ?>
@@ -465,6 +521,7 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     else {
       MeprTransaction::create_free_transaction($txn);
     }*/
+
   }
 
 
@@ -477,18 +534,16 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
   public function display_options_form() {
     $mepr_options = MeprOptions::fetch();
 
-    $login_name    = trim($this->settings->login_name);
     $txn_key       = trim($this->settings->transaction_key);
+    $webhook_signature_key = trim($this->settings->webhook_signature_key);
     $signature_key = trim($this->settings->signature_key);
+    update_option('_ets_crypto_com_secret_key',$signature_key);
+    update_option('_ets_crypto_com_webhook_signature_key',$webhook_signature_key);
+
     $test_mode     = ($this->settings->test_mode == 'on' or $this->settings->test_mode == true);
     $debug         = ($this->settings->debug == 'on' or $this->settings->debug == true);
-    $force_ssl     = ($this->settings->force_ssl == 'on' or $this->settings->force_ssl == true);
     ?>
       <table>
-        <tr>
-          <td><?php _e('API Login ID*:', 'memberpress'); ?></td>
-          <td><input type="text" class="mepr-auto-trim" name="<?php echo $mepr_options->integrations_str; ?>[<?php echo $this->id;?>][login_name]" value="<?php echo $login_name; ?>" /></td>
-        </tr>
         <tr>
           <td><?php _e('Merchant Key*:', 'memberpress'); ?></td>
           <td><input type="text" class="mepr-auto-trim" name="<?php echo $mepr_options->integrations_str; ?>[<?php echo $this->id;?>][transaction_key]" value="<?php echo $txn_key; ?>" /></td>
@@ -498,13 +553,11 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
           <td><input type="text" class="mepr-auto-trim" name="<?php echo $mepr_options->integrations_str; ?>[<?php echo $this->id;?>][signature_key]" value="<?php echo $signature_key; ?>" /></td>
         </tr>
         <tr>
+          <td><?php _e('Webhook Signature Key:', 'memberpress'); ?></td>
+          <td><input type="text" class="mepr-auto-trim" name="<?php echo $mepr_options->integrations_str; ?>[<?php echo $this->id;?>][webhook_signature_key]" value="<?php echo $webhook_signature_key; ?>" /></td>
+        </tr>
+        <tr>
           <td colspan="2"><input type="checkbox" name="<?php echo $mepr_options->integrations_str; ?>[<?php echo $this->id;?>][test_mode]"<?php checked($test_mode); ?> />&nbsp;<?php _e('Use Crypto.com Sandbox', 'memberpress'); ?></td>
-        </tr>
-        <tr>
-          <td colspan="2"><input type="checkbox" name="<?php echo $mepr_options->integrations_str; ?>[<?php echo $this->id;?>][debug]"<?php checked($debug); ?> />&nbsp;<?php _e('Send Crypto.com Debug Emails', 'memberpress'); ?></td>
-        </tr>
-        <tr>
-          <td colspan="2"><input type="checkbox" name="<?php echo $mepr_options->integrations_str; ?>[<?php echo $this->id;?>][force_ssl]"<?php checked($force_ssl); ?> />&nbsp;<?php _e('Force SSL', 'memberpress'); ?></td>
         </tr>
         <tr>
           <td><?php _e('Webhook URL:', 'memberpress'); ?></td>
@@ -519,10 +572,6 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
   /** Validates the form for the given payment gateway on the MemberPress Options page */
   public function validate_options_form($errors) {
     $mepr_options = MeprOptions::fetch();
-
-    if( !isset($_POST[$mepr_options->integrations_str][$this->id]['login_name']) or
-        empty($_POST[$mepr_options->integrations_str][$this->id]['login_name']) )
-      $errors[] = __("Login Name field cannot be blank.", 'memberpress');
 
     if( !isset($_POST[$mepr_options->integrations_str][$this->id]['transaction_key']) or
         empty($_POST[$mepr_options->integrations_str][$this->id]['transaction_key']) )
@@ -572,70 +621,4 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     return false; // Why bother
   }
 
-  public function get_http_crypto_response($api_url, $crpto_secret_key, $api_method = 'get', $data = '')
-  {
-        if ('get' === $api_method) {
-            $response = wp_remote_get($api_url,
-                array(
-                    'headers' => array(
-                        'Authorization' => 'Bearer ' . $crpto_secret_key,
-                    ),
-                )
-            );
-        } else {
-            $response = wp_remote_post($api_url,
-                array(
-                    'headers' => array(
-                        'Authorization' => 'Bearer ' . $crpto_secret_key,
-                    ),
-                    'body' => $data,
-                )
-            );
-        }
-
-        $result = array();
-
-        // if wordpress error
-        if (is_wp_error($response)) {
-            $result['error'] = $response->get_error_message();
-            $result['request'] = $data;
-            return $result;
-        }
-
-        $response = wp_remote_retrieve_body($response);
-        $response_json = json_decode($response, true);
-
-        // if outgoing request get back a normal response, but containing an error field in JSON body
-        if ($response_json['error']) {
-            $result['error'] = $response_json['error'];
-            $result['error']['message'] = $result['error']['param'] . ' ' . $result['error']['code'];
-            $result['request'] = $data;
-            return $result;
-        }
-
-        // if everything normal
-        $result['success'] = $response_json;
-        return $result;
-  }
-
-  public function create_crypto_payment($txn_id, $amount, $customer_name, $return_url, $cancel_url, $secret_key){
-    $mepr_option = MeprOptions::fetch();
-    $currency = strtolower($mepr_option->currency_code);
-    $crypto_api_payment_url = 'https://pay.crypto.com/api/payments/';    
-    $data = array(
-      'order_id'         => $txn_id,
-      'currency'         => $currency,
-      'amount'           => $amount,
-      'description'      => 'Memberpress Transaction ID: ' . $txn_id,
-      'metadata'         => array (
-          'customer_name'=> $customer_name,
-          'plugin_name'  => 'woocommerce',
-          'plugin_flow'  => 'redirect'
-      ),
-      'return_url'       => $return_url,
-      'cancel_url'       => $cancel_url
-    );
-
-    return self::get_http_response($crypto_api_payment_url, $secret_key, 'post', $data);
-  }
 } //End class

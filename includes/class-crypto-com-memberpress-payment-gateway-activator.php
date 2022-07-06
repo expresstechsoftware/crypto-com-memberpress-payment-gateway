@@ -30,7 +30,7 @@ class Crypto_Com_Memberpress_Payment_Gateway_Activator {
 	 * @since    1.0.0
 	 */
 	public static function activate() {
-        $create_dir_path = ABSPATH . 'wp-content/plugins/memberpress/app/gateways/MeprSomeOtherGateway.php';
+       /* $create_dir_path = ABSPATH . 'wp-content/plugins/memberpress/app/gateways/MeprSomeOtherGateway.php';
 
         $exist_dir_path = ABSPATH . "wp-content/plugins/crypto-com-memberpress-payment-gateway/MeprSomeOtherGateway.php";
         
@@ -42,7 +42,7 @@ class Crypto_Com_Memberpress_Payment_Gateway_Activator {
 
             // Copy file
             copy($exist_dir_path, $create_dir_path);
-        }
+        }*/
 	}
 
 }

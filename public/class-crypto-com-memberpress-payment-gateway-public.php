@@ -99,5 +99,5 @@ class Crypto_Com_Memberpress_Payment_Gateway_Public {
 		wp_enqueue_script( $this->plugin_name, plugin_dir_url( __FILE__ ) . 'js/crypto-com-memberpress-payment-gateway-public.js', array( 'jquery' ), $this->version, false );
 
 	}
-
+	
 }
