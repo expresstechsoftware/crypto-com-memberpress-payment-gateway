@@ -156,7 +156,12 @@ class Crypto_Com_Memberpress_Payment_Gateway {
 
 		$this->loader->add_action( 'admin_enqueue_scripts', $plugin_admin, 'enqueue_styles' );
 		$this->loader->add_action( 'admin_enqueue_scripts', $plugin_admin, 'enqueue_scripts' );
+		$this->loader->add_filter( 'mepr-gateway-paths', $plugin_admin, 'ets_memberpress_add_gateway_file' );
+		$this->loader->add_action( 'rest_api_init', $plugin_admin, 'ets_crypto_com_register_route' );
+		$this->loader->add_action( 'add_meta_boxes', $plugin_admin, 'ets_crypto_com_add_product_meta_box' );
+		$this->loader->add_action( 'save_post', $plugin_admin, 'ets_crypto_com_memberpress_save_meta_box' );                                
 
+		
 	}
 
 	/**
@@ -172,6 +177,8 @@ class Crypto_Com_Memberpress_Payment_Gateway {
 
 		$this->loader->add_action( 'wp_enqueue_scripts', $plugin_public, 'enqueue_styles' );
 		$this->loader->add_action( 'wp_enqueue_scripts', $plugin_public, 'enqueue_scripts' );
+
+
 
 	}
 

@@ -36,6 +36,8 @@ if ( ! defined( 'WPINC' ) ) {
  * Rename this for your plugin and update it as you release new versions.
  */
 define( 'CRYPTO_COM_MEMBERPRESS_PAYMENT_GATEWAY_VERSION', '1.0.0' );
+define( 'CRYPTO_COM_PLUGIN_DIR_PATH', plugin_dir_path(__FILE__) );
+
 
 /**
  * The code that runs during plugin activation.
@@ -79,4 +81,58 @@ function run_crypto_com_memberpress_payment_gateway() {
 	$plugin->run();
 
 }
+
+// Register http://example.com/wp-json/crypto-pay/v1/webhook
+/*add_action('rest_api_init', function () {
+    register_rest_route('crypto-pay-ets/v1', '/webhook-ets', array(
+        'methods' => 'POST',
+        'callback' => 'cpm_process_webhook',
+        'permission_callback' => 'cpm_process_webhook_verify_signature',
+        //'content-type' => 'application/json',
+    ));
+
+});
+function cpm_process_webhook(WP_REST_Request $request){
+    var_dump('here');
+    die('ok');
+      $json = $request->get_json_params();
+    $event = $json['type'];
+
+    if ($event == 'payment.captured') {
+
+        // handle payment capture event from Crypto.com Pay server webhook
+        // if payment is captured (i.e. status = 'succeeded'), set woo order status to processing (or the status that merchant defined)
+        $payment_status = $json['data']['object']['status'];
+        if ($payment_status == 'succeeded') {
+            $txn_id = $json['data']['object']['order_id'];
+            $txn    = new MeprTransaction($txn_id);
+            if (!is_null($txn)) {
+                $txn->status = MeprTransaction::$complete_str;
+                $txn->store();
+            }
+        }
+
+    } elseif ($event == 'payment.created' || $event == 'payment.refund_transferred') {
+        // no need to handle
+    }
+
+    return false;
+}
+
+function cpm_process_webhook_verify_signature(WP_REST_Request $request){
+  $webhook_signature  = $request->get_header('Pay-Signature');
+  $body = $request->get_body();
+
+  if(empty($webhook_signature) || empty($body)) {
+      return false;
+  }
+
+  $webhook_signature_secret = 'To/enhSxAoPeqPiGuSpDgcoodLBlnuGidrSKZ9hCglE=';
+
+  if(empty($webhook_signature_secret)) {
+      return false;
+  }
+
+  return Crypto_Signature::verify_header($body, $webhook_signature, $webhook_signature_secret, null);
+}*/
 run_crypto_com_memberpress_payment_gateway();
