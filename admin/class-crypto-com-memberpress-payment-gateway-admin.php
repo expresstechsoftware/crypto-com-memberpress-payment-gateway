@@ -131,26 +131,9 @@ class Crypto_Com_Memberpress_Payment_Gateway_Admin {
 	  	$json = $request->get_json_params();
       	update_option('ets_check_webhook_responce',$json);
       	update_option('ets_check_webhook_responce_request',$request);
-
-
     	$event = $json['type'];
       	update_option('ets_check_webhhok_events',$event);
-
-		if ($event == 'payment.captured') {
-
-		  // handle payment capture event from Crypto.com Pay server webhook
-		  // if payment is captured (i.e. status = 'succeeded'), set woo order status to processing (or the status that merchant defined)
-		  $payment_status = $json['data']['object']['status'];
-		  if ($payment_status == 'succeeded') {
-		      $txn_id = $json['data']['object']['order_id'];
-		      $txn    = new MeprTransaction($txn_id);
-		      if (!is_null($txn)) {
-		          $txn->status = MeprTransaction::$complete_str;
-		          $txn->store();
-		      }
-		  }
-
-		} elseif ($event == 'subscription.activated')  {
+		if ($event == 'subscription.activated')  {
 			$sub_status = $json['data']['object']['status'];
 			if ($sub_status == 'active') {
 				$metadata = $json['data']['object']['metadata'];
@@ -166,12 +149,39 @@ class Crypto_Com_Memberpress_Payment_Gateway_Admin {
       					}
 					  	$txn->store();
 					}
-
 				}
-
 			}
-		} elseif ($event == 'payment.created' || $event == 'payment.refund_transferred') {
-		  // no need to handle
+		} elseif ($event == 'invoice.paid') {
+			global $wpdb;
+			$subscription_id = $json['data']['object']['subscription_id'];
+			$results = $wpdb->get_row( "SELECT post_id from $wpdb->postmeta WHERE meta_key='_ets_crypto_subscription_id' AND meta_value = '".$subscription_id."'");
+			//only for recuuring payment
+			if ($results) {
+				$txn_id = $results->post_id;
+        		$check_txn = get_post_meta($txn_id,'_ets_crypto_during_subscription',true);
+				if ($txn_id && !$check_txn ) {
+					$first_txn  = new MeprTransaction($txn_id);
+  					$sub  = $first_txn->subscription();
+  					$sub_num = $sub->subscr_id;
+  					$sub_id = $sub->id;
+  					$product_id = $sub->product_id;
+  					$user_id = $sub->user_id;
+  					$txn             = new MeprTransaction();
+					$txn->user_id    = $sub->user_id;
+					$txn->product_id = $sub->product_id;
+					$txn->coupon_id  = $first_txn->coupon_id;
+					$txn->total  = $first_txn->total;
+          			$txn->status = MeprTransaction::$complete_str;
+    				$txn->set_subtotal($first_txn->total);
+      				$txn->gateway    = $first_txn->gateway;
+					$txn->subscription_id  = $sub_id;
+  					$sub->status = MeprSubscription::$active_str;
+					$sub->store();
+				  	$txn->store();
+				} else {
+        			delete_post_meta($txn_id, '_ets_crypto_during_subscription' );
+				}
+			}
 		}
   		return false;
 	}

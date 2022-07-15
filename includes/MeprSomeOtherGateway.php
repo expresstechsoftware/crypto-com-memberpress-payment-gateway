@@ -374,21 +374,33 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     $currency = $mepr_options->currency_code;
     $signature_key = trim($this->settings->signature_key);
     $product_result = $this->crypto_api->get_crypto_product($membership_id, $signature_key);
-
+    $amount = $txn->amount;
+    if($prd->price != $amount) {
+      $coupon = true;
+      $prd->price = $amount;
+    }
     if ($product_result && array_key_exists('success', $product_result ) && $product_result['success']) {
       $pricing_plan_id = $product_result['success']['pricing_plans'][0]['id'];
       $plan_amount = $product_result['success']['pricing_plans'][0]['amount'];
     }
-    $customer_result = $this->crypto_api->create_crypto_customer($user_email, $customer_name, $signature_key);
-    if ($customer_result && array_key_exists('success',$customer_result)) {
-      $customer_id = $customer_result['success']['id'];
+
+    $crypto_customer_id = get_post_meta($txn_id,'_ets_crypto_customer_id', true);
+
+    if (!$crypto_customer_id) {
+      $customer_result = $this->crypto_api->create_crypto_customer($user_email, $customer_name, $signature_key);
+      if ($customer_result && array_key_exists('success',$customer_result)) {
+        $crypto_customer_id = $customer_result['success']['id'];
+        update_post_meta($txn_id,'_ets_crypto_customer_id', $crypto_customer_id);
+      }
     }
-    if ($customer_id && $pricing_plan_id ) {
-      $subs_result = $this->crypto_api->create_crypto_subscription($txn_id, $customer_id, $pricing_plan_id, $signature_key);
+
+    if ($crypto_customer_id && $pricing_plan_id ) {
+      $subs_result = $this->crypto_api->create_crypto_subscription($txn_id, $crypto_customer_id, $pricing_plan_id, $signature_key);
       if($subs_result && $subs_result['success']){
         $subscription_id = $subs_result['success']['id'];
         $this->settings->subscription_id = $subscription_id;
         update_post_meta($txn_id,'_ets_crypto_subscription_id', $subscription_id);
+        update_post_meta($txn_id,'_ets_crypto_during_subscription', '1');
       }
     }
   }
@@ -420,6 +432,7 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
       $coupon = true;
       $prd->price = $amount;
     }
+
     $sanitized_title = sanitize_title($prd->post_title);
     $query_params = array('membership' => $sanitized_title, 'trans_num' => $txn->trans_num, 'membership_id' => $prd->ID);
     if($txn->subscription_id > 0) {
@@ -437,7 +450,6 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
     $amount =  Crypto_Currency_Helper::get_crypto_currency_in_subunit($currency, $amount);
     $payment_parameters = array(
       'publishable_key'=> trim($this->settings->transaction_key),
-     // 'publishable_key' => 'pk_live_pinyHt65woVHZqXAK6FMWXBk',
       'currency'       => $currency,
       'amount'         => $amount,
       'description'    => 'Memberpress Transaction ID: ' . $txn_id,
@@ -451,52 +463,23 @@ class MeprSomeOtherGateway extends MeprBaseRealGateway
         <form action="" method="post" id="payment-form" class="mepr-form" novalidate>
           <input type="hidden" name="mepr_process_payment_form" value="Y" />
           <input type="hidden" name="mepr_transaction_id" value="<?php echo $txn_id; ?>" />
-
           <div class="mepr_spacer">&nbsp;</div>
           <script
             src="https://js.crypto.com/sdk?publishable-key=<?php echo esc_attr($payment_parameters['publishable_key']) ?>">
           </script>
           <script>
             cryptopay.Button({
-            /*createPayment: function(actions) {
-                return actions.payment.create({
-                  currency: '<?php echo esc_attr($payment_parameters['currency']) ?>',
-                  amount: '<?php echo esc_attr($payment_parameters['amount']) ?>',
-                  description : '<?php echo esc_attr($payment_parameters['description']) ?>',
-                  order_id: '<?php echo esc_attr($payment_parameters['txn_id']) ?>',
-                  metadata: {
-                    customer_name: '<?php echo esc_attr($payment_parameters['first_name']) ?> <?php echo esc_attr($payment_parameters['last_name']) ?> ',
-                    plugin_name: 'memberpress',
-                    plugin_flow: 'popup'
-                  }
-                });
-            },*/
-            createSubscription: function(actions) {
-              return actions.subscription.fetch(<?php echo "'".$subscription_id."'";?>);
-            },
-            onApprove: function(data, actions) {
-              console.log(data,'==',actions);
-              if(data && data.id) {
-                  console.log('here',data);
+              createSubscription: function(actions) {
+                return actions.subscription.fetch(<?php echo "'".$subscription_id."'";?>);
+              },
+              onApprove: function(data, actions) {
+                if(data && data.id) {
                   window.open('<?php echo esc_attr($result_url) ?>'+'&id='+data.id, '_self');
+                }
               }
-            }
-            /*onApprove: function (d, actions) {
-              if(actions && actions.payment) {
-                actions.payment.fetch().then(function (data) {
-                  console.log(data);
-                  window.open('<?php echo esc_attr($result_url) ?>'+'&id='+data.id, '_self');
-                })
-                .catch(function (err) {
-                  window.open('<?php echo esc_attr($result_url) ?>'+'&error=1', '_self');
-                });
-              } else if (d && d.id) {
-                window.open('<?php echo esc_attr($result_url) ?>'+'&id='+d.id, '_self');
-              }
-            }*/
             }).render("#pay-crypto-button")
           </script>
-          <div id="pay-crypto-button" type='button' data-subscription-id="<?php echo esc_attr($subscription_id);?>"></div>
+          <div id="pay-crypto-button" type='button' data-subscription-id="<?php echo esc_attr($subscription_id);?>" data-test-sub-id="<?php echo esc_attr($subscription_id);?>"></div>
 
           <img src="<?php echo admin_url('images/loading.gif'); ?>" alt="<?php _e('Loading...', 'memberpress'); ?>" style="display: none;" class="mepr-loading-gif" />
           <?php MeprView::render('/shared/has_errors', get_defined_vars()); ?>

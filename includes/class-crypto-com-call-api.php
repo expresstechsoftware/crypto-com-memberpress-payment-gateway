@@ -107,6 +107,31 @@ class Crypto_Com_Api
         return self::get_http_crypto_response($crypto_api_url, $secret_key, 'get');
     }
 
+    public function ets_create_crypto_subscription_product($membership_id, $sub_product_name, $amount, $secret_key)
+    {
+        $mepr_option = MeprOptions::fetch();
+        $currency = strtolower($mepr_option->currency_code);
+        $crypto_api_url = 'https://pay.crypto.com/api/products';
+        $data = array(
+            "name"          => $sub_product_name,
+            "active"        => true,
+            "description"   => $sub_product_name,
+            "pricing_plans" => [
+                array(
+                    "amount"         => $amount,
+                    "currency"       => $currency,
+                    "active"         => true,
+                    "description"    => $sub_product_name,
+                    "interval"       => "month",
+                    "interval_count" => 1,
+                    "purchase_type"  => "recurring"
+                ),
+            ]
+        );
+        return self::get_http_crypto_response($crypto_api_url, $secret_key, 'post', $data);
+
+    }
+
     public function create_crypto_payment($txn_id, $amount, $customer_name, $return_url, $cancel_url, $secret_key){
         $mepr_option = MeprOptions::fetch();
         $currency = strtolower($mepr_option->currency_code);
